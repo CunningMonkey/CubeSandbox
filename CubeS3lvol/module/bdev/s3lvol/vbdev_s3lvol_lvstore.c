@@ -3294,7 +3294,8 @@ s3lvol_lvol_destroyed(void *cb_arg, int lvolerrno)
 		}
 
 		if (ctx->esnap_uuid[0] != '\0') {
-			s3lvol_imports_recheck(ctx->owner, ctx->esnap_uuid);
+			s3lvol_import_template_reap_if_unused(ctx->owner,
+							      ctx->esnap_uuid);
 		}
 	} else {
 		if (ctx->release_chain && ctx->lvol) {
@@ -3442,6 +3443,11 @@ s3lvol_lvol_destroy_impl(struct spdk_lvol *lvol,
 
 	if (!lvol) {
 		return -EINVAL;
+	}
+	if (!release_chain && s3lvol_lvol_is_import_template(lvol)) {
+		SPDK_ERRLOG("lvol '%s' is an import template; it is removed when "
+			    "its last clone goes away\n", lvol->name);
+		return -EPERM;
 	}
 
 	/* A snapshot another machine is reading through must not go away. Deleting it
@@ -3660,9 +3666,17 @@ s3lvol_lvol_destroy_impl(struct spdk_lvol *lvol,
 
 	/* Recorded now, for the same reason the owner is: after the destroy the
 	 * parent chain is gone. A clone reaches the export through its snapshot,
-	 * so the uuid has to come from that chain rather than only this blob. */
+	 * so the uuid has to come from that chain rather than only this blob.
+	 *
+	 * After decouple the hidden template is local, so the esnap walk is
+	 * empty and the public delete path cannot name the template. The export
+	 * uuid is still the suffix of its name, which is what reap matches. */
 	(void)s3lvol_lvol_import_uuid(lvol, ctx->esnap_uuid,
 				     sizeof(ctx->esnap_uuid));
+	if (ctx->esnap_uuid[0] == '\0') {
+		(void)s3lvol_lvol_template_export_uuid(lvol, ctx->esnap_uuid,
+						       sizeof(ctx->esnap_uuid));
+	}
 
 	/* Capture the cluster counts before the destroy: the blob must still be
 	 * open to read them, and is gone by the time s3lvol_lvol_destroyed()
@@ -3690,6 +3704,13 @@ s3lvol_lvol_destroy(struct spdk_lvol *lvol,
 		    spdk_lvol_op_complete cb_fn, void *cb_arg)
 {
 	return s3lvol_lvol_destroy_impl(lvol, cb_fn, cb_arg, false);
+}
+
+int
+s3lvol_lvol_destroy_locked(struct spdk_lvol *lvol,
+			   spdk_lvol_op_complete cb_fn, void *cb_arg)
+{
+	return s3lvol_lvol_destroy_impl(lvol, cb_fn, cb_arg, true);
 }
 
 /* ==========================================================================
