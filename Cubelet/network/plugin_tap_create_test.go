@@ -609,6 +609,7 @@ func TestShouldAppendDNSAllowOut(t *testing.T) {
 	allow := true
 	host := "api.example.com:443"
 	sni := "*.example.com"
+	catchAll := "*"
 
 	tests := []struct {
 		name string
@@ -667,6 +668,16 @@ func TestShouldAppendDNSAllowOut(t *testing.T) {
 			cfg: &networkruntime.CubeNetworkConfig{
 				Rules: []*networkruntime.EgressRule{
 					{Match: &networkruntime.EgressRuleMatch{Host: &host}},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "l7 catch-all host",
+			cfg: &networkruntime.CubeNetworkConfig{
+				AllowInternetAccess: &block,
+				Rules: []*networkruntime.EgressRule{
+					{Match: &networkruntime.EgressRuleMatch{Host: &catchAll}},
 				},
 			},
 			want: true,
