@@ -10,7 +10,6 @@ import (
 
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/constants"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/log"
-	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/localcache"
 )
 
 // Orphan replica cleanup sweep.
@@ -92,13 +91,24 @@ func reconcileOrphanReplicaCleanups(ctx context.Context) error {
 	logger.Warnf("found %d orphan replica cleanup(s) left by earlier deletes; retrying cubelet cleanup", len(rows))
 
 	for _, row := range rows {
-		locator := templateCleanupLocator{NodeID: row.NodeID, NodeIP: row.NodeIP}
-		// Re-resolve the address from the live node cache: the stored IP may
-		// predate a re-deployment, while the node id is the stable identity.
-		if row.NodeID != "" {
-			if n, ok := localcache.GetNode(row.NodeID); ok && n != nil && n.HostIP() != "" {
-				locator.NodeIP = n.HostIP()
+		ip, kind := classifyReplicaNode(row.NodeID, row.NodeIP)
+		if kind == replicaNodeRetired {
+			if err := deleteReplicaRowByID(ctx, row.ID); err != nil {
+				logger.Warnf("orphan replica cleanup could not drop retired row: template=%s node=%s err=%v", row.TemplateID, row.NodeID, err)
+				continue
 			}
+			logger.Infof("orphan replica cleanup converged: template=%s node=%s retired", row.TemplateID, row.NodeID)
+			continue
+		}
+		if kind == replicaNodeUnreachable {
+			logger.Warnf("orphan replica cleanup still failing: template=%s node=%s unreachable", row.TemplateID, row.NodeID)
+			continue
+		}
+		locator := templateCleanupLocator{NodeID: row.NodeID, NodeIP: row.NodeIP}
+		// A live node is dialed at its current address. An unloaded cache
+		// keeps the stored address so a cold start does not skip cleanup.
+		if ip != "" {
+			locator.NodeIP = ip
 		}
 		// Backend hint is empty: the definition row (which carried it) is
 		// gone by construction, and cubelet derives the physical layout from

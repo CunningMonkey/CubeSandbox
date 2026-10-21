@@ -17,11 +17,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/constants"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/log"
+	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/templatecenter"
 	"github.com/tencentcloud/CubeSandbox/CubeTemplateCenter/pkg/build"
+	"gorm.io/gorm"
 	"github.com/tencentcloud/CubeSandbox/CubeTemplateCenter/pkg/image"
 	"github.com/tencentcloud/CubeSandbox/CubeTemplateCenter/pkg/tcconfig"
 )
@@ -338,4 +341,36 @@ func RegisterInternalRoutes(g *gin.RouterGroup) {
 	internal.POST("/build", handleBuildSubmit)
 	internal.POST("/artifact/delete", handleArtifactDelete)
 	internal.POST("/artifact/upload", handleArtifactUpload)
+	internal.POST("/artifact/download-grant", handleArtifactDownloadGrant)
+}
+
+type artifactDownloadGrantRequest struct {
+	ArtifactID string `json:"artifact_id"`
+	PublicBase string `json:"public_base"`
+	TTLSeconds int64  `json:"ttl_seconds"`
+}
+
+func handleArtifactDownloadGrant(c *gin.Context) {
+	var req artifactDownloadGrantRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "invalid json"})
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if req.TTLSeconds <= 0 {
+		ttl = templatecenter.ArtifactDownloadTTL()
+	}
+	downloadURL, err := templatecenter.SignStoredArtifactURL(c.Request.Context(), req.ArtifactID, req.PublicBase, ttl)
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			code = http.StatusNotFound
+		}
+		c.JSON(code, ErrorResponse{Error: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"url":        downloadURL,
+		"expires_in": int64(ttl.Seconds()),
+	})
 }

@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -92,20 +93,43 @@ func tryDownloadPmemFile(ctx context.Context, imagePath string, spec *cubeimages
 	}
 	downloadURL = rewriteDownloadHost(downloadURL, cubeMasterHTTPAddr())
 	expectedSHA := strings.TrimSpace(spec.Annotations[constants.MasterAnnotationRootfsArtifactSHA256])
+	artifactID := strings.TrimSpace(spec.Annotations[constants.MasterAnnotationRootfsArtifactID])
 	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
 		return err
 	}
-	tmpPath := imagePath + ".download"
-	if err := os.RemoveAll(tmpPath); err != nil { // NOCC:Path Traversal()
-		return err
+	var lastErr error
+	for attempt := 0; attempt < maxArtifactDownloadAttempts; attempt++ {
+		if attempt > 0 {
+			fresh, err := refreshDirectArtifactURL(ctx, artifactID)
+			if err != nil {
+				return fmt.Errorf("reauthorize artifact %s: %w", artifactID, err)
+			}
+			downloadURL = rewriteDownloadHost(fresh, cubeMasterHTTPAddr())
+		}
+		tmpPath := imagePath + ".download"
+		if err := os.RemoveAll(tmpPath); err != nil { // NOCC:Path Traversal()
+			return err
+		}
+		err := downloadArtifactOnce(ctx, downloadURL, tmpPath, expectedSHA, spec)
+		if err == nil {
+			return os.Rename(tmpPath, imagePath)
+		}
+		lastErr = err
+		if artifactID == "" || !artifactDownloadNeedsReauth(err) {
+			return err
+		}
 	}
+	return lastErr
+}
+
+const maxArtifactDownloadAttempts = 3
+
+func downloadArtifactOnce(ctx context.Context, downloadURL, tmpPath, expectedSHA string, spec *cubeimages.ImageSpec) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}
-	if token := strings.TrimSpace(spec.Annotations[constants.MasterAnnotationRootfsArtifactToken]); token != "" {
-		req.Header.Set("X-Cube-Artifact-Token", token)
-	}
+	setArtifactTokenHeader(req, spec)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -130,10 +154,69 @@ func tryDownloadPmemFile(ctx context.Context, imagePath string, spec *cubeimages
 			return fmt.Errorf("artifact sha256 mismatch, got %s want %s", gotSHA, expectedSHA)
 		}
 	}
-	if err := os.Rename(tmpPath, imagePath); err != nil {
-		return err
-	}
 	return nil
+}
+
+func artifactDownloadNeedsReauth(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "download status code 401") || strings.Contains(msg, "download status code 403")
+}
+
+func setArtifactTokenHeader(req *http.Request, spec *cubeimages.ImageSpec) {
+	if req == nil || req.URL == nil || spec == nil || spec.Annotations == nil {
+		return
+	}
+	if !isMasterArtifactDownloadRoute(req.URL) {
+		return
+	}
+	if token := strings.TrimSpace(spec.Annotations[constants.MasterAnnotationRootfsArtifactToken]); token != "" {
+		req.Header.Set("X-Cube-Artifact-Token", token)
+	}
+}
+
+func refreshDirectArtifactURL(ctx context.Context, artifactID string) (string, error) {
+	if strings.TrimSpace(artifactID) == "" {
+		return "", fmt.Errorf("artifact id is empty")
+	}
+	base := strings.TrimSpace(cubeMasterHTTPAddr())
+	if base == "" {
+		return "", fmt.Errorf("cubemaster http addr is empty")
+	}
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+	u, err := url.Parse(strings.TrimRight(base, "/") + "/cube/template/artifact/authorize")
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("artifact_id", artifactID)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("authorize status code %d", resp.StatusCode)
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(body.URL) == "" {
+		return "", fmt.Errorf("authorize response url is empty")
+	}
+	return body.URL, nil
 }
 
 // isAllZeros checks if the byte slice consists entirely of zero bytes.
@@ -274,7 +357,23 @@ func refreshKernelFile(ctx context.Context, instanceType, imageRef string) error
 // s3store.PresignedGetURL always signs with SigV4, so this covers every
 // S3-backed artifact URL CubeMaster can hand out.
 func isS3PresignedURL(u *url.URL) bool {
-	return u.Query().Has("X-Amz-Signature")
+	return u != nil && u.Query().Has("X-Amz-Signature")
+}
+
+func isBlobstoreSignedURL(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	q := u.Query()
+	return q.Get("sig") != "" && q.Get("exp") != "" && q.Get("key") != ""
+}
+
+func isMasterArtifactDownloadRoute(u *url.URL) bool {
+	if u == nil {
+		return false
+	}
+	path := u.EscapedPath()
+	return strings.Contains(path, "/cube/template/") && strings.Contains(path, "download")
 }
 
 // cubeMasterHTTPAddr returns the locally configured CubeMaster HTTP address
@@ -288,17 +387,9 @@ func cubeMasterHTTPAddr() string {
 	return strings.TrimSpace(cfg.MetaServerConfig.CubeMasterHTTPAddr)
 }
 
-// rewriteDownloadHost swaps rawURL's host for endpoint (the locally
-// configured CubeMaster HTTP address). This exists because the artifact
-// row's MasterNodeIP (used to build CubeMaster's own /cube/template/...
-// download route) may not be reachable from every cubelet's network, while
-// the cubelet-local cubemaster_http_addr config always is.
-//
-// S3/MinIO presigned URLs (artifact.ArtifactURL, set when TC uploads the
-// artifact to S3) must be passed through unchanged: the signature is only
-// valid for the original host, and CubeMaster has no route matching the S3
-// object path/query anyway -- rewriting the host here used to silently turn
-// a valid presigned URL into a 404 (Error: "download status code 404").
+// rewriteDownloadHost swaps rawURL's host for endpoint only when rawURL is
+// CubeMaster's own /cube/template/.../download route. S3 presigns and TC HMAC
+// grants are signed for their original host and must be fetched directly.
 func rewriteDownloadHost(rawURL, endpoint string) string {
 	if endpoint == "" {
 		return rawURL
@@ -307,8 +398,16 @@ func rewriteDownloadHost(rawURL, endpoint string) string {
 	if err != nil {
 		return rawURL
 	}
-	if isS3PresignedURL(u) {
+	if isS3PresignedURL(u) || isBlobstoreSignedURL(u) || !isMasterArtifactDownloadRoute(u) {
 		return rawURL
+	}
+	if strings.Contains(endpoint, "://") {
+		ep, err := url.Parse(endpoint)
+		if err != nil || ep.Host == "" {
+			return rawURL
+		}
+		u.Host = ep.Host
+		return u.String()
 	}
 	u.Host = endpoint
 	return u.String()

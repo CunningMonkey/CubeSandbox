@@ -1207,7 +1207,7 @@ var TemplateListCommand = cli.Command{
 		},
 		cli.IntFlag{
 			Name:  "limit",
-			Usage: "max templates to return (0 = all)",
+			Usage: "max templates to return (default 50, 0 = all)",
 		},
 		cli.IntFlag{
 			Name:  "offset",
@@ -1288,10 +1288,12 @@ var TemplateListCommand = cli.Command{
 // paging flag is set, keeping the request identical to the historical one.
 func templateListQuery(c *cli.Context) string {
 	query := url.Values{}
+	limit := 50
 	if c.IsSet("limit") {
-		if limit := c.Int("limit"); limit > 0 {
-			query.Set("limit", strconv.Itoa(limit))
-		}
+		limit = c.Int("limit")
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
 	}
 	if c.IsSet("offset") {
 		if offset := c.Int("offset"); offset > 0 {

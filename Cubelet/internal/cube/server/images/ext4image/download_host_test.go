@@ -43,6 +43,14 @@ func TestRewriteDownloadHostRewritesCubeMasterRoute(t *testing.T) {
 // TestRewriteDownloadHostEmptyEndpointPassesThrough covers the case where
 // cubemaster_http_addr is unset (e.g. MetaServerConfig missing), which must
 // stay a plain passthrough rather than producing a broken URL.
+func TestRewriteDownloadHostLeavesTemplateCenterGrantUntouched(t *testing.T) {
+	raw := "https://tc.example/internal/artifact/object?key=artifacts/rfs.ext4&exp=1893456000&sig=abc"
+	got := rewriteDownloadHost(raw, "cubemaster.svc:8089")
+	if got != raw {
+		t.Fatalf("rewriteDownloadHost mangled a TC grant:\n got:  %s\n want: %s", got, raw)
+	}
+}
+
 func TestRewriteDownloadHostEmptyEndpointPassesThrough(t *testing.T) {
 	raw := "https://minio.internal:9000/bucket/rfs-x?X-Amz-Signature=abc"
 	if got := rewriteDownloadHost(raw, ""); got != raw {

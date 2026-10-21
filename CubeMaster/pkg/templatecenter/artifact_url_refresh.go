@@ -11,7 +11,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/db/models"
 	"github.com/tencentcloud/CubeSandbox/CubeMaster/pkg/base/log"
@@ -49,10 +48,8 @@ import (
 // and a graceful degradation for S3 ones (the stored URL keeps whatever
 // validity it has left).
 
-// s3PresignExpiry matches s3store.DefaultPresignExpiry (7 days, the SigV4
-// maximum). Kept as a constant rather than an env override because every
-// signer in the deployment must agree on the object lifetime semantics.
-const s3PresignExpiry = 7 * 24 * time.Hour
+// Download grants use artifactDownloadTTL (default 1h, CUBE_ARTIFACT_DOWNLOAD_TTL).
+// The SigV4 maximum is seven days; that is a cap, not the default.
 
 type artifactStore struct {
 	store   blobstore.Store
@@ -109,7 +106,7 @@ func loadArtifactStore() *artifactStore {
 		Region:             s3.Region,
 		PathStyle:          s3.UsePathStyle,
 		UseSSL:             &useSSL,
-		PresignExpiry:      s3PresignExpiry,
+		PresignExpiry:      artifactDownloadTTL(),
 		AttachmentBasename: true,
 	}.Config(prefix))
 	if err != nil {
@@ -170,7 +167,7 @@ var presignArtifactGetURL = func(ctx context.Context, artifact *models.RootfsArt
 	if st == nil {
 		return "", errS3PresignNotConfigured
 	}
-	u, err := st.store.SignedGetURL(ctx, artifactStoreKey(ctx, artifact), s3PresignExpiry)
+	u, err := st.store.SignedGetURL(ctx, artifactStoreKey(ctx, artifact), artifactDownloadTTL())
 	if err != nil {
 		if errors.Is(err, blobstore.ErrUnsupported) {
 			return "", nil

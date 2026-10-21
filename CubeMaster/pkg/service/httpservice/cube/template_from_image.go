@@ -253,6 +253,28 @@ var artifactProxyHTTPClient = &http.Client{
 	},
 }
 
+func authorizeTemplateArtifactGinHandler(c *gin.Context) {
+	artifactID := strings.TrimSpace(c.Query("artifact_id"))
+	if artifactID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "artifact_id is required"})
+		return
+	}
+	downloadURL, err := templatecenter.IssueDirectArtifactDownload(c.Request.Context(), artifactID)
+	if err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			code = http.StatusNotFound
+		}
+		log.G(c.Request.Context()).Warnf("artifact authorize %s: %v", artifactID, err)
+		c.JSON(code, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"url":        downloadURL,
+		"expires_in": int64(templatecenter.ArtifactDownloadTTL().Seconds()),
+	})
+}
+
 func downloadTemplateArtifactGinHandler(c *gin.Context) {
 	rt := CubeLog.GetTraceInfo(c.Request.Context())
 

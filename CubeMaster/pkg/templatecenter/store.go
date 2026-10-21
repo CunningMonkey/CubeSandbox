@@ -193,7 +193,8 @@ type definitionCreateOptions struct {
 }
 
 // TemplateListOptions controls pagination of ListTemplatesWithOptions.
-// A zero value returns the full list (backwards compatible).
+// Limit and Offset both zero return the full cached list. Any positive limit
+// or offset reads one database page instead of slicing that cache.
 type TemplateListOptions struct {
 	Limit  int
 	Offset int
@@ -215,21 +216,21 @@ func ListTemplates(ctx context.Context) ([]TemplateInfo, error) {
 	return result.Templates, nil
 }
 
-// ListTemplatesWithOptions returns templates with optional limit/offset paging
-// over a totally ordered list, so pages concatenate to the unpaged result.
+// ListTemplatesWithOptions returns templates. A zero limit and offset keeps
+// the historical full-list cache. Any requested page is bounded in SQL,
+// including job-only templates that have no definition row.
 func ListTemplatesWithOptions(ctx context.Context, opts TemplateListOptions) (*TemplateListResult, error) {
 	if !isReady() {
 		return nil, ErrTemplateStoreNotInitialized
+	}
+	if opts.Limit > 0 || opts.Offset > 0 {
+		return listTemplatesPage(ctx, opts)
 	}
 	infos, err := listTemplatesCached(ctx)
 	if err != nil {
 		return nil, err
 	}
-	total := len(infos)
-	if opts.Limit <= 0 && opts.Offset <= 0 {
-		return &TemplateListResult{Templates: infos, Total: total}, nil
-	}
-	return &TemplateListResult{Templates: sliceTemplateInfos(infos, opts), Total: total}, nil
+	return &TemplateListResult{Templates: infos, Total: len(infos)}, nil
 }
 
 // listTemplatesCached serves the aggregate list from the query cache on a hit
@@ -1985,7 +1986,7 @@ func evaluateCompat(replica ReplicaStatus, _, _, _ string) string {
 }
 
 func isReplicaSchedulable(replica ReplicaStatus) bool {
-	return replica.Status == ReplicaStatusReady
+	return isReplicaSchedulableNow(context.Background(), replica)
 }
 
 // bindGuestVersionToReplica records pin versions on the replica. CompatStatus
@@ -2005,7 +2006,7 @@ func bindGuestVersionToReplica(replica *ReplicaStatus, guestImageVersion, agentV
 }
 
 func replicaModelToStatus(replica models.TemplateReplica) ReplicaStatus {
-	return ReplicaStatus{
+	status := ReplicaStatus{
 		NodeID:            replica.NodeID,
 		NodeIP:            replica.NodeIP,
 		InstanceType:      replica.InstanceType,
@@ -2025,6 +2026,8 @@ func replicaModelToStatus(replica models.TemplateReplica) ReplicaStatus {
 		CompatPolicy:      normalizeCompatPolicy(replica.CompatPolicy),
 		CompatCheckedUnix: replica.CompatCheckedUnix,
 	}
+	applyReplicaNodeTruth(&status)
+	return status
 }
 
 func replicaStatusToModel(templateID, instanceType string, replica ReplicaStatus) *models.TemplateReplica {
@@ -2153,7 +2156,10 @@ func isTemplateReplicaSchedulable(ctx context.Context, templateID, nodeID string
 
 func isReplicaSchedulableNow(ctx context.Context, replica ReplicaStatus) bool {
 	_ = ctx
-	return strings.TrimSpace(replica.Status) == ReplicaStatusReady
+	if strings.TrimSpace(replica.Status) != ReplicaStatusReady {
+		return false
+	}
+	return replicaNodeSchedulable(replica.NodeID, replica.NodeIP)
 }
 
 func EnsureTemplateLocalityReady(ctx context.Context, templateID, instanceType string) error {

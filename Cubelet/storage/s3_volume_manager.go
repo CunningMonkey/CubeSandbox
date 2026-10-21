@@ -142,12 +142,7 @@ func (m *S3Cow) CreateTemplateBuildRootfs(ctx context.Context, templateID string
 }
 
 func (m *S3Cow) CommitTemplateRootfs(ctx context.Context, sourceName, templateID string) (*cowVolume, error) {
-	snapshotName := cowTemplateRootfsName(templateID)
-	devPath, err := m.createTemplateSnapshotPath(sourceName, snapshotName)
-	if err != nil {
-		return nil, err
-	}
-	return newCowVolume(snapshotName, cowKindSnapshot, 0, devPath), nil
+	return commitTemplateRootfsRetryable(ctx, m, sourceName, templateID)
 }
 
 func (m *S3Cow) CreateMemoryVolume(ctx context.Context, templateID string, sizeBytes uint64) (*cowVolume, error) {

@@ -24,6 +24,7 @@ type fakeCowEngine struct {
 	createSnapshotActivations   []bool
 	createSnapshotPath          string
 	createSnapshotErr           error
+	createSnapshotErrByName     map[string]error
 	createVolumeFromSnapshots   [][2]string
 	createVolumeFromSnapshotErr error
 	activatePaths               map[string]string
@@ -85,6 +86,9 @@ func (f *fakeCowEngine) CreateVolume(name string, sizeBytes uint64) (string, err
 func (f *fakeCowEngine) CreateSnapshotFromVolume(sourceName, snapshotName string, activate bool) (string, error) {
 	f.createSnapshots = append(f.createSnapshots, [2]string{sourceName, snapshotName})
 	f.createSnapshotActivations = append(f.createSnapshotActivations, activate)
+	if err, ok := f.createSnapshotErrByName[snapshotName]; ok {
+		return f.createSnapshotPath, err
+	}
 	if f.createSnapshotErr != nil {
 		return f.createSnapshotPath, f.createSnapshotErr
 	}

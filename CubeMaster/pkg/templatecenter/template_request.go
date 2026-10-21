@@ -54,16 +54,17 @@ func generateTemplateCreateRequest(ctx context.Context, req *types.CreateTemplat
 			},
 		},
 	}
-	// Always hand Cubelets / create-requests the CubeMaster download endpoint,
-	// never a direct S3 presigned URL. The endpoint is the one address the
-	// deployment guarantees every node can reach; it can then proxy to
-	// CubeTemplateCenter / S3 as needed. This avoids K8s multi-node drift where
-	// some nodes can dial the object store endpoint and others cannot.
-	downloadURL := buildDownloadURL(effectiveArtifactDownloadBaseURL(downloadBaseURL, artifact), artifact.ArtifactID, artifact.DownloadToken)
+	// Cubelets fetch ext4 bytes from S3/MinIO or from CubeTemplateCenter.
+	// CubeMaster only mints a short-lived grant; it does not proxy the body
+	// and it does not put the long-lived artifact token on the request.
+	downloadURL, err := issueCubeletArtifactURL(ctx, artifact)
+	if err != nil {
+		return nil, fmt.Errorf("artifact %s direct download url: %w", artifact.ArtifactID, err)
+	}
 	imageAnnotations := map[string]string{
 		constants.CubeAnnotationRootfsArtifactID:        artifact.ArtifactID,
 		constants.CubeAnnotationRootfsArtifactURL:       downloadURL,
-		constants.CubeAnnotationRootfsArtifactToken:     artifact.DownloadToken,
+		constants.CubeAnnotationRootfsArtifactToken:     "",
 		constants.CubeAnnotationRootfsArtifactSHA256:    artifact.Ext4SHA256,
 		constants.CubeAnnotationRootfsArtifactSizeBytes: strconv.FormatInt(artifact.Ext4SizeBytes, 10),
 		constants.CubeAnnotationWritableLayerSize:       req.WritableLayerSize,

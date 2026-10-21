@@ -66,6 +66,7 @@ func TestCubeRoutesTemplateWritesStayOnCubeMaster(t *testing.T) {
 		"GET /cube/template/migrate":                "getTemplateMigrateStatusAction",
 		"GET /cube/template/build/:build_id/status": "handleTemplateBuildStatusAction",
 		"GET /cube/template/from-image":             "getTemplateFromImageGinHandler",
+		"GET /cube/template/artifact/authorize":     "authorizeTemplateArtifactGinHandler",
 	}
 	for route, wantHandler := range localRoutes {
 		method, path, _ := strings.Cut(route, " ")

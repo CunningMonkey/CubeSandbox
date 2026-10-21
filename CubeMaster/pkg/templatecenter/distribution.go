@@ -161,13 +161,15 @@ func ensureArtifactDistributable(ctx context.Context, artifact *models.RootfsArt
 	if artifact == nil {
 		return fmt.Errorf("distributeRootfsArtifact: artifact is nil")
 	}
-	downloadBaseURL := effectiveArtifactDownloadBaseURL("", artifact)
-	if artifact.Status != ArtifactStatusReady || artifact.Ext4SizeBytes == 0 || strings.TrimSpace(artifact.Ext4SHA256) == "" || strings.TrimSpace(artifact.DownloadToken) == "" || downloadBaseURL == "" {
+	if artifact.Status != ArtifactStatusReady || artifact.Ext4SizeBytes == 0 || strings.TrimSpace(artifact.Ext4SHA256) == "" {
 		return fmt.Errorf(
-			"artifact %s is not ready for distribution (status=%s size_bytes=%d sha256_set=%t token_set=%t download_base_url=%q master_node_ip=%q); template build likely did not complete — check cubemaster logs for buildRootfsArtifact errors",
+			"artifact %s is not ready for distribution (status=%s size_bytes=%d sha256_set=%t); template build likely did not complete — check cubemaster logs for buildRootfsArtifact errors",
 			artifact.ArtifactID, artifact.Status, artifact.Ext4SizeBytes,
-			strings.TrimSpace(artifact.Ext4SHA256) != "", strings.TrimSpace(artifact.DownloadToken) != "", downloadBaseURL, artifact.MasterNodeIP,
+			strings.TrimSpace(artifact.Ext4SHA256) != "",
 		)
+	}
+	if _, err := issueCubeletArtifactURL(ctx, artifact); err != nil {
+		return fmt.Errorf("artifact %s is not ready for distribution: %w", artifact.ArtifactID, err)
 	}
 	// The five checks above only read the artifact row. A row can be perfectly
 	// READY while the ext4 it points at is not servable — either because the
@@ -190,17 +192,17 @@ func ensureArtifactDistributable(ctx context.Context, artifact *models.RootfsArt
 // exactly the nodes that lack a READY replica instead of re-resolving the
 // full healthy-node set. Callers must run ensureArtifactDistributable first.
 func distributeRootfsArtifactToNodes(ctx context.Context, req *types.CreateTemplateFromImageReq, generatedReq *types.CreateCubeSandboxReq, artifact *models.RootfsArtifact, templateID, jobID string, targets []*node.Node) ([]*node.Node, int32, int32, int32, error) {
-	// Always give Cubelets the CubeMaster download endpoint. That keeps the
-	// node-facing address uniform across local-disk and S3-backed artifacts and
-	// avoids per-node dependence on the object-store endpoint's reachability.
-	downloadURL := buildDownloadURL(effectiveArtifactDownloadBaseURL("", artifact), artifact.ArtifactID, artifact.DownloadToken)
+	downloadURL, err := issueCubeletArtifactURL(ctx, artifact)
+	if err != nil {
+		return nil, 0, 0, 0, fmt.Errorf("artifact %s direct download url: %w", artifact.ArtifactID, err)
+	}
 	spec := &imagev1.ImageSpec{
 		Image:        artifact.ArtifactID,
 		StorageMedia: imagev1.ImageStorageMediaType_ext4.String(),
 		Annotations: map[string]string{
 			constants.CubeAnnotationRootfsArtifactID:        artifact.ArtifactID,
 			constants.CubeAnnotationRootfsArtifactURL:       downloadURL,
-			constants.CubeAnnotationRootfsArtifactToken:     artifact.DownloadToken,
+			constants.CubeAnnotationRootfsArtifactToken:     "",
 			constants.CubeAnnotationRootfsArtifactSHA256:    artifact.Ext4SHA256,
 			constants.CubeAnnotationRootfsArtifactSizeBytes: strconv.FormatInt(artifact.Ext4SizeBytes, 10),
 			constants.CubeAnnotationWritableLayerSize:       req.WritableLayerSize,

@@ -394,7 +394,7 @@ func (t *templateCleanupTargets) shouldCheckInUse() bool {
 func cleanupTemplateMetadata(ctx context.Context, templateID string) error {
 	var cleanupErr error
 	if err := store.db.WithContext(ctx).Unscoped().Table(constants.TemplateReplicaTableName).
-		Where("template_id = ?", templateID).Delete(&models.TemplateReplica{}).Error; err != nil {
+		Where("template_id = ? AND cleanup_required = ?", templateID, false).Delete(&models.TemplateReplica{}).Error; err != nil {
 		cleanupErr = errors.Join(cleanupErr, err)
 	}
 	if err := store.db.WithContext(ctx).Unscoped().Table(constants.TemplateDefinitionTableName).
@@ -452,10 +452,22 @@ func cleanupTemplateReplicasWithLocators(ctx context.Context, templateID string,
 	backend = pinnedCleanupBackend(backend)
 	var cleanupErr error
 	for _, locator := range locators {
-		hostIP := locator.NodeIP
-		if hostIP == "" && locator.NodeID != "" {
-			if n, ok := localcache.GetNode(locator.NodeID); ok && n != nil {
-				hostIP = n.HostIP()
+		hostIP, kind := classifyReplicaNode(locator.NodeID, locator.NodeIP)
+		switch kind {
+		case replicaNodeRetired:
+			log.G(ctx).Infof("cleanup template %s: node %s is retired; skipping historical address %s", templateID, locator.NodeID, locator.NodeIP)
+			continue
+		case replicaNodeUnreachable:
+			markReplicaCleanupRequired(ctx, templateID, locator.NodeID, locator.NodeIP)
+			log.G(ctx).Warnf("cleanup template %s: node %s is unreachable; leaving cleanup_required", templateID, locator.NodeID)
+			continue
+		case replicaNodeLive:
+			if hostIP != "" && hostIP != strings.TrimSpace(locator.NodeIP) {
+				persistReplicaNodeIP(ctx, templateID, locator.NodeID, hostIP)
+			}
+		default:
+			if hostIP == "" {
+				hostIP = strings.TrimSpace(locator.NodeIP)
 			}
 		}
 		if hostIP == "" {
@@ -474,6 +486,7 @@ func cleanupTemplateReplicasWithLocators(ctx context.Context, templateID string,
 			if isIgnorableTemplateCleanupError(err) {
 				continue
 			}
+			markReplicaCleanupRequired(ctx, templateID, locator.NodeID, locator.NodeIP)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("cleanup template %s on node %s: %w", templateID, locator.NodeID, err))
 			continue
 		}
@@ -481,6 +494,7 @@ func cleanupTemplateReplicasWithLocators(ctx context.Context, templateID string,
 			if isIgnorableTemplateCleanupMessage(rsp.GetRet().GetRetMsg()) {
 				continue
 			}
+			markReplicaCleanupRequired(ctx, templateID, locator.NodeID, locator.NodeIP)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("cleanup template %s on node %s failed: %s", templateID, locator.NodeID, rsp.GetRet().GetRetMsg()))
 		}
 	}

@@ -124,6 +124,11 @@ func (s *internalHttp) registerRoutes() {
 	// GinRequestMiddleware provided.
 	internal := s.engine.Group("", gin.Recovery())
 	api.RegisterInternalRoutes(internal)
+	// HMAC-signed object GETs are authorized by the query signature, not by
+	// the build/delete shared token and not by the public auth middleware.
+	objectGateway := templatecenter.ArtifactObjectHandler()
+	s.engine.GET(templatecenter.ArtifactObjectMountPath, gin.WrapH(objectGateway))
+	s.engine.HEAD(templatecenter.ArtifactObjectMountPath, gin.WrapH(objectGateway))
 
 	root := s.engine.Group("")
 	root.Use(middleware.GinRequestMiddleware())

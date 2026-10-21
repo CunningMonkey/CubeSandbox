@@ -120,6 +120,7 @@ func RegisterCubeRoutes(g *gin.RouterGroup) {
 	g.PUT(TemplateAction+"/:template_id/alias", setTemplateAliasGinHandler)
 	g.GET(TemplateBuildStatusAction+"/:build_id/status", handleTemplateBuildStatusAction)
 	g.GET(TemplateFromImageAction, getTemplateFromImageGinHandler)
+	g.GET(TemplateArtifactAuthorizeAction, authorizeTemplateArtifactGinHandler)
 
 	g.GET(TemplateCompatAction, proxyToTemplateCenter)
 	g.POST(TemplateCompatAction, proxyToTemplateCenter)

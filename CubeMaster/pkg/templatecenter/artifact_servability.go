@@ -205,7 +205,10 @@ func probeArtifactServability(ctx context.Context, artifact *models.RootfsArtifa
 	if artifact == nil {
 		return artifactServabilityUnknown, "nil artifact"
 	}
-	rawURL := buildDownloadURL(effectiveArtifactDownloadBaseURL("", artifact), artifact.ArtifactID, artifact.DownloadToken)
+	rawURL, err := issueCubeletArtifactURL(ctx, artifact)
+	if err != nil {
+		return artifactServabilityUnknown, err.Error()
+	}
 	status, header, body, err := getArtifactDownloadRange(ctx, rawURL)
 	if err != nil {
 		return artifactServabilityUnknown, fmt.Sprintf("get %q: %v", rawURL, err)
