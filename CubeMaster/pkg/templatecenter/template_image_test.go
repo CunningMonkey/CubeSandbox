@@ -618,6 +618,68 @@ func TestGenerateTemplateCreateRequestInjectsImmutableRootfsMetadata(t *testing.
 	}
 }
 
+func TestGenerateTemplateCreateRequestMergesEnvOverridesWithImageEnv(t *testing.T) {
+	newReq := func(envs []*types.KeyValue) *types.CreateTemplateFromImageReq {
+		return &types.CreateTemplateFromImageReq{
+			Request:            &types.Request{RequestID: "req-env"},
+			SourceImageRef:     "docker.io/library/nginx:latest",
+			TemplateID:         "template-env",
+			WritableLayerSize:  "20Gi",
+			InstanceType:       cubeboxv1.InstanceType_cubebox.String(),
+			NetworkType:        cubeboxv1.NetworkType_tap.String(),
+			ContainerOverrides: &types.ContainerOverrides{Envs: envs},
+		}
+	}
+	artifact := &models.RootfsArtifact{ArtifactID: "artifact-env", DownloadToken: "token-env"}
+	imageCfg := DockerImageConfig{Env: []string{"PATH=/usr/bin", "LANG=C.UTF-8", "LC_ALL=C.UTF-8"}}
+
+	cases := []struct {
+		name      string
+		overrides []*types.KeyValue
+		want      []*types.KeyValue
+	}{
+		{
+			name:      "override adds a key and keeps image env",
+			overrides: []*types.KeyValue{{Key: "API_KEY", Value: "secret"}},
+			want: []*types.KeyValue{
+				{Key: "API_KEY", Value: "secret"},
+				{Key: "LANG", Value: "C.UTF-8"},
+				{Key: "LC_ALL", Value: "C.UTF-8"},
+				{Key: "PATH", Value: "/usr/bin"},
+			},
+		},
+		{
+			name:      "override wins for the same key",
+			overrides: []*types.KeyValue{{Key: "LANG", Value: "en_US.UTF-8"}},
+			want: []*types.KeyValue{
+				{Key: "LANG", Value: "en_US.UTF-8"},
+				{Key: "LC_ALL", Value: "C.UTF-8"},
+				{Key: "PATH", Value: "/usr/bin"},
+			},
+		},
+		{
+			name:      "empty overrides keep image env",
+			overrides: []*types.KeyValue{},
+			want: []*types.KeyValue{
+				{Key: "LANG", Value: "C.UTF-8"},
+				{Key: "LC_ALL", Value: "C.UTF-8"},
+				{Key: "PATH", Value: "/usr/bin"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := generateTemplateCreateRequest(context.Background(), newReq(tc.overrides), artifact, imageCfg, "http://master.example")
+			if err != nil {
+				t.Fatalf("generateTemplateCreateRequest failed: %v", err)
+			}
+			if !reflect.DeepEqual(got.Containers[0].Envs, tc.want) {
+				t.Fatalf("Envs=%v, want %v", got.Containers[0].Envs, tc.want)
+			}
+		})
+	}
+}
+
 func TestGenerateTemplateCreateRequestUsesMasterDownloadEndpointForS3Artifacts(t *testing.T) {
 	req := &types.CreateTemplateFromImageReq{
 		Request:           &types.Request{RequestID: "req-s3"},
